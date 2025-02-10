@@ -1,7 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
+
+# rate limiter
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
 
 app = FastAPI(
     title="Library Management API",
@@ -9,6 +13,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# book class
 class BookBase(BaseModel):
     title: str
     author: str
@@ -27,8 +32,43 @@ class Book(BookBase):
     class Config:
         from_attributes = True
 
+
+# Rate limiter
+class RateLimiter:
+    def __init__(self, request_per_minute: int = 60):
+        self.requests_per_minute = request_per_minute
+        self.requests: Dict[str, List[datetime]] = {}
+
+    async def __call__(self, request: Request):
+        client_ip = request.client.host
+        now = datetime.now()
+
+        # Initialize the client request for current client_ip
+        if client_ip not in self.requests:
+            self.requests[client_ip] = []
+        
+        # Remove time exceed request (1 minute)
+        self.requests[client_ip] = [
+            req_time for req_time in self.requests[client_ip]
+            if now - req_time < timedelta(minutes=1)
+        ]
+
+        # check if rate limit is exceeded
+        if len(self.requests[client_ip]) >= self.requests_per_minute:
+            return HTTPException(
+                status_code=429,
+                detail="Rate Limit exceed. Please try again in a minute."
+            )
+        
+        #add current request
+        self.requests[client_ip].append(now)
+        return True
+    
+
 # Simulate a database with a list
 books_db = []
+# create rate limiter
+ratelimiter = RateLimiter(request_per_minute=60)
 
 @app.get("/")
 def read_root():
