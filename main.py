@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 
 # rate limiter
@@ -35,40 +35,39 @@ class Book(BookBase):
 
 # Rate limiter
 class RateLimiter:
-    def __init__(self, request_per_minute: int = 60):
-        self.requests_per_minute = request_per_minute
+    def __init__(self, requests_per_minute: int = 60):
+        self.requests_per_minute = requests_per_minute
         self.requests: Dict[str, List[datetime]] = {}
 
     async def __call__(self, request: Request):
         client_ip = request.client.host
         now = datetime.now()
-
-        # Initialize the client request for current client_ip
+        
+        # Initialize or clean old requests for this IP
         if client_ip not in self.requests:
             self.requests[client_ip] = []
         
-        # Remove time exceed request (1 minute)
+        # Remove requests older than 1 minute
         self.requests[client_ip] = [
             req_time for req_time in self.requests[client_ip]
             if now - req_time < timedelta(minutes=1)
         ]
-
-        # check if rate limit is exceeded
+        
+        # Check if rate limit is exceeded
         if len(self.requests[client_ip]) >= self.requests_per_minute:
-            return HTTPException(
+            raise HTTPException(
                 status_code=429,
-                detail="Rate Limit exceed. Please try again in a minute."
+                detail="Rate limit exceeded. Please try again in a minute."
             )
         
-        #add current request
+        # Add current request
         self.requests[client_ip].append(now)
         return True
-    
 
 # Simulate a database with a list
 books_db = []
 # create rate limiter
-ratelimiter = RateLimiter(request_per_minute=60)
+rate_limiter = RateLimiter(requests_per_minute=60)
 
 @app.get("/")
 def read_root():
@@ -76,14 +75,21 @@ def read_root():
     return {"message": "Welcome to the Library Management API"}
 
 @app.get("/books", response_model=List[Book])
-def list_books(skip: int = 0, limit: int = 10):
+async def list_books(
+    skip: int = 0, 
+    limit: int = 10,
+    _: bool = Depends(rate_limiter)
+):
     """
     Retrieve a list of books with pagination support
     """
     return books_db[skip : skip + limit]
 
 @app.get("/books/{book_id}", response_model=Book)
-def get_book(book_id: int):
+async def get_book(
+    book_id: int,
+    _: bool = Depends(rate_limiter)
+):
     """
     Retrieve a specific book by its ID
     """
@@ -92,7 +98,10 @@ def get_book(book_id: int):
     return books_db[book_id]
 
 @app.post("/books", response_model=Book, status_code=201)
-def create_book(book: BookCreate):
+async def create_book(
+    book: BookCreate,
+    _: bool = Depends(rate_limiter)
+):
     """
     Create a new book entry
     """
@@ -107,7 +116,11 @@ def create_book(book: BookCreate):
     return book_entry
 
 @app.put("/books/{book_id}", response_model=Book)
-def update_book(book_id: int, book: BookCreate):
+async def update_book(
+    book_id: int, 
+    book: BookCreate,
+    _: bool = Depends(rate_limiter)
+):
     """
     Update an existing book's details
     """
@@ -124,7 +137,10 @@ def update_book(book_id: int, book: BookCreate):
     return books_db[book_id]
 
 @app.delete("/books/{book_id}")
-def delete_book(book_id: int):
+async def delete_book(
+    book_id: int,
+    _: bool = Depends(rate_limiter)
+):
     """
     Delete a book by its ID
     """
